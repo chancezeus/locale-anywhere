@@ -2,44 +2,63 @@
 
 namespace Sloveniangooner\LocaleAnywhere\Http\Controllers;
 
-use Illuminate\Routing\Controller;
-use Sloveniangooner\LocaleAnywhere\LocaleAnywhere;
+use DB;
 use Illuminate\Http\Request;
+use Illuminate\Routing\Controller;
+use Laravel\Nova\Actions\Actionable;
+use Laravel\Nova\Actions\ActionEvent;
 use Laravel\Nova\Http\Controllers\DeletesFields;
 use Laravel\Nova\Nova;
-use Laravel\Nova\Actions\ActionEvent;
-use Laravel\Nova\Actions\Actionable;
-use DB;
+use Sloveniangooner\LocaleAnywhere\Contracts\LocaleResolver;
+use Sloveniangooner\LocaleAnywhere\Contracts\LocalesProvider;
 
 class LanguagesController extends Controller
 {
     use DeletesFields;
 
-    public function languages()
+    /** @var \Sloveniangooner\LocaleAnywhere\Contracts\LocaleResolver */
+    private $localeResolver;
+
+    /** @var \Sloveniangooner\LocaleAnywhere\Contracts\LocalesProvider */
+    private $localesProvider;
+
+    /**
+     * @param \Sloveniangooner\LocaleAnywhere\Contracts\LocaleResolver $localeResolver
+     * @param \Sloveniangooner\LocaleAnywhere\Contracts\LocalesProvider $localesProvider
+     */
+    public function __construct(LocaleResolver $localeResolver, LocalesProvider $localesProvider)
     {
-        return LocaleAnywhere::getLocales();
+        $this->localeResolver = $localeResolver;
+        $this->localesProvider = $localesProvider;
+    }
+
+    /**
+     * @return string[]
+     */
+    public function languages(): array
+    {
+        return $this->localesProvider->getLocales();
     }
 
     public function cacheLocale(Request $request)
     {
-        $prefix = optional(auth()->user())->id;
-        cache()->forever($prefix.".locale", $request->input("locale"));
-        return cache()->get($prefix.".locale");
+        return $this->localeResolver->setLocale($request->input('locale'));
     }
 
     public function delete(Request $request)
     {
-        $locale = cache()->has("locale") ? cache()->get("locale") : app()->getLocale();
+        $locale = $this->localeResolver->getLocale();
 
         $resourceClass = Nova::resourceForKey($request->get("resourceName"));
         if (!$resourceClass) {
-            abort("Missing resource class");
+            abort(404, "Missing resource class");
         }
 
         $modelClass = $resourceClass::$model;
+
         $resource = $modelClass::find($request->get("resourceId"));
         if (!$resource) {
-            abort("Missing resource");
+            abort(404, "Missing resource");
         }
 
         // If translations count === 1 then forget the model completely
@@ -49,7 +68,9 @@ class LanguagesController extends Controller
 
         if ($translationsCount > 1 and $resource->forgetAllTranslations($locale)->save()) {
             return response()->json(["status" => true]);
-        } elseif ($translationsCount === 1) {
+        }
+
+        if ($translationsCount === 1) {
             if (in_array(Actionable::class, class_uses_recursive($resource))) {
                 $resource->actions()->delete();
             }
@@ -58,12 +79,12 @@ class LanguagesController extends Controller
 
             DB::table('action_events')->insert(
                 ActionEvent::forResourceDelete($request->user(), collect([$resource]))
-                            ->map->getAttributes()->all()
+                    ->map->getAttributes()->all()
             );
 
             return response()->json(["status" => true]);
         }
 
-        abort("Error saving");
+        abort(500, "Error saving");
     }
 }
